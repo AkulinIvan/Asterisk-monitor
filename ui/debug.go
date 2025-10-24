@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -11,14 +13,17 @@ import (
 )
 
 type DebugModel struct {
-	monitor    MonitorInterface
-	viewport   viewport.Model
-	debugLogs  string
-	filter     string
-	isRunning  bool
-	debugMode  string // "basic", "audio", "full"
-	audioStats string
-	ready      bool
+	monitor      MonitorInterface
+	viewport     viewport.Model
+	debugLogs    string
+	filter       string
+	isRunning    bool
+	debugMode    string // "basic", "audio", "full"
+	audioStats   string
+	isLogging    bool
+	logFile      string
+	problemCalls []string
+	ready        bool
 }
 
 func NewDebugModel(mon MonitorInterface) DebugModel {
@@ -27,15 +32,22 @@ func NewDebugModel(mon MonitorInterface) DebugModel {
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("62"))
 
+	// Создаем директорию для логов если не существует
+	logDir := "/var/log/asterisk-monitor"
+	os.MkdirAll(logDir, 0755)
+
 	return DebugModel{
-		monitor:    mon,
-		viewport:   vp,
-		debugLogs:  "",
-		filter:     "ERROR|WARNING|failed|reject|timeout|busy|congestion|jitter|packet loss",
-		isRunning:  false,
-		debugMode:  "basic",
-		audioStats: "",
-		ready:      true,
+		monitor:      mon,
+		viewport:     vp,
+		debugLogs:    "",
+		filter:       "ERROR|WARNING|failed|reject|timeout|busy|congestion|jitter|packet loss",
+		isRunning:    false,
+		debugMode:    "basic",
+		audioStats:   "",
+		isLogging:    false,
+		logFile:      filepath.Join(logDir, "problem-calls.log"),
+		problemCalls: []string{},
+		ready:        true,
 	}
 }
 
@@ -59,6 +71,9 @@ func (m DebugModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "a", "A":
 			m.startAudioDebug()
 			return m, nil
+		case "l", "L":
+			m.toggleLogging()
+			return m, nil
 		case "c", "C":
 			m.debugLogs = ""
 			m.audioStats = ""
@@ -66,6 +81,9 @@ func (m DebugModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "f", "F":
 			m.toggleFilter()
+			return m, nil
+		case "p", "P":
+			m.showProblemCalls()
 			return m, nil
 		case "r", "R":
 			m.refreshDebug()
@@ -94,6 +112,12 @@ func (m DebugModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if strings.TrimSpace(newLogs) != "" {
 				m.debugLogs = newLogs + "\n" + m.debugLogs
+
+				// Если включено логирование, записываем проблемные события
+				if m.isLogging {
+					m.logProblemEvents(newLogs)
+				}
+
 				// Ограничиваем размер логов
 				lines := strings.Split(m.debugLogs, "\n")
 				if len(lines) > 100 {
@@ -163,6 +187,7 @@ func (m *DebugModel) startDebug() {
 	m.debugLogs += "RTP Debug: ON\n"
 	m.debugLogs += "Core Debug: Level 1\n"
 	m.debugLogs += "Filter: " + m.filter + "\n"
+	m.debugLogs += "Logging: " + m.getLoggingStatus() + "\n"
 	m.debugLogs += "==============================\n\n"
 
 	m.updateContent()
@@ -204,6 +229,8 @@ func (m *DebugModel) startAudioDebug() {
 	m.debugLogs += "Jitterbuffer Debug: ON\n"
 	m.debugLogs += "Core Debug: Level 3\n"
 	m.debugLogs += "Filter: " + m.filter + "\n"
+	m.debugLogs += "Logging: " + m.getLoggingStatus() + "\n"
+	m.debugLogs += "Log File: " + m.logFile + "\n"
 	m.debugLogs += "================================\n\n"
 
 	m.updateContent()
@@ -241,6 +268,21 @@ func (m *DebugModel) stopDebug() {
 	m.updateContent()
 }
 
+func (m *DebugModel) toggleLogging() {
+	m.isLogging = !m.isLogging
+
+	if m.isLogging {
+		// Создаем заголовок в лог-файле при включении
+		m.writeToLogFile("=== PROBLEM CALL LOGGING STARTED ===\n")
+		m.writeToLogFile("Time: " + time.Now().Format("2006-01-02 15:04:05") + "\n")
+		m.writeToLogFile("Debug Mode: " + m.debugMode + "\n")
+		m.writeToLogFile("Filter: " + m.filter + "\n")
+		m.writeToLogFile("====================================\n\n")
+	}
+
+	m.updateContent()
+}
+
 func (m *DebugModel) refreshDebug() {
 	if m.isRunning {
 		m.getDebugLogs()
@@ -248,6 +290,20 @@ func (m *DebugModel) refreshDebug() {
 			m.getAudioStats()
 		}
 	}
+}
+
+func (m *DebugModel) showProblemCalls() {
+	// Показываем историю проблемных вызовов
+	if len(m.problemCalls) > 0 {
+		m.debugLogs = "=== PROBLEM CALLS HISTORY ===\n\n"
+		for i, call := range m.problemCalls {
+			m.debugLogs += fmt.Sprintf("%d. %s\n", i+1, call)
+		}
+		m.debugLogs += "\nTotal: " + fmt.Sprintf("%d", len(m.problemCalls)) + " problem calls logged\n"
+	} else {
+		m.debugLogs = "No problem calls recorded yet.\n"
+	}
+	m.updateContent()
 }
 
 func (m *DebugModel) toggleFilter() {
@@ -259,6 +315,64 @@ func (m *DebugModel) toggleFilter() {
 		m.filter = ""
 	}
 	m.updateContent()
+}
+
+func (m *DebugModel) getLoggingStatus() string {
+	if m.isLogging {
+		return "🟢 ENABLED"
+	}
+	return "🔴 DISABLED"
+}
+
+func (m *DebugModel) logProblemEvents(logs string) {
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	lines := strings.Split(logs, "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Определяем серьезность проблемы
+		severity := "INFO"
+		if strings.Contains(strings.ToUpper(line), "ERROR") {
+			severity = "ERROR"
+		} else if strings.Contains(strings.ToUpper(line), "WARNING") {
+			severity = "WARNING"
+		} else if strings.Contains(strings.ToUpper(line), "FAILED") {
+			severity = "ERROR"
+		} else if strings.Contains(strings.ToUpper(line), "JITTER") {
+			severity = "AUDIO_ISSUE"
+		} else if strings.Contains(strings.ToUpper(line), "PACKET LOSS") {
+			severity = "NETWORK_ISSUE"
+		}
+
+		// Форматируем запись для лога
+		logEntry := fmt.Sprintf("[%s] [%s] %s\n", timestamp, severity, line)
+
+		// Записываем в файл
+		m.writeToLogFile(logEntry)
+
+		// Сохраняем в историю проблемных вызовов
+		if severity != "INFO" {
+			m.problemCalls = append([]string{logEntry}, m.problemCalls...)
+			// Ограничиваем историю
+			if len(m.problemCalls) > 50 {
+				m.problemCalls = m.problemCalls[:50]
+			}
+		}
+	}
+}
+
+func (m *DebugModel) writeToLogFile(content string) {
+	file, err := os.OpenFile(m.logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	file.WriteString(content)
 }
 
 func (m *DebugModel) getDebugLogs() tea.Msg {
@@ -401,11 +515,14 @@ func (m *DebugModel) updateContent() {
 	// Статус
 	status := "🔴 STOPPED"
 	mode := ""
+	loggingStatus := ""
 	if m.isRunning {
 		status = "🟢 RUNNING"
 		mode = " | Mode: " + m.debugMode
+		loggingStatus = " | Logging: " + m.getLoggingStatus()
 	}
-	content.WriteString(fmt.Sprintf("Status: %s%s | Filter: %s\n\n", status, mode, m.filter))
+	content.WriteString(fmt.Sprintf("Status: %s%s%s | Filter: %s\n", status, mode, loggingStatus, m.filter))
+	content.WriteString(fmt.Sprintf("Log File: %s\n\n", m.logFile))
 
 	// Показываем аудио статистику если есть
 	if m.audioStats != "" {
@@ -426,6 +543,12 @@ func (m *DebugModel) updateContent() {
 
 func (m *DebugModel) renderDebugInfo() string {
 	info := `🎯 AUDIO QUALITY DEBUG MONITOR
+
+📁 LOGGING FEATURES:
+• Automatic problem detection & logging
+• File: /var/log/asterisk-monitor/problem-calls.log
+• Timestamped events with severity levels
+• Problem call history (last 50 calls)
 
 Common Audio Issues Detected:
 • 🔇 "Bubbling" sounds - Jitter buffer problems
@@ -448,6 +571,8 @@ Common Audio Issues Detected:
 ⚡ Commands:
 • S - Start basic debug
 • A - Start audio quality debug
+• L - Toggle problem logging
+• P - Show problem calls history
 • X - Stop debugging  
 • R - Refresh stats
 • F - Toggle filters
@@ -456,20 +581,26 @@ Common Audio Issues Detected:
 
 💡 For Audio Issues:
 1. Start AUDIO debug (press A)
-2. Make a test call with problems
-3. Watch for: jitter, packet loss, buffer issues
-4. Check network latency and CPU usage`
+2. Enable logging (press L) 
+3. Make a test call with problems
+4. Check log file for detailed analysis
+5. Review problem history (press P)`
 
 	return borderStyle.Render(info)
 }
 
 func (m *DebugModel) footer() string {
 	status := "STOPPED"
+	logging := "🔴"
 	if m.isRunning {
 		status = "RUNNING 🟢"
+	}
+	if m.isLogging {
+		logging = "🟢"
 	}
 
 	return lipgloss.NewStyle().
 		Foreground(colorGray).
-		Render(fmt.Sprintf("Status: %s | S:Basic A:Audio X:Stop R:Refresh F:Filter C:Clear Q:Quit", status))
+		Render(fmt.Sprintf("Status: %s | Log: %s | S:Basic A:Audio L:Log(%s) P:Problems R:Refresh F:Filter C:Clear Q:Quit",
+			status, logging, m.getLoggingStatus()))
 }
