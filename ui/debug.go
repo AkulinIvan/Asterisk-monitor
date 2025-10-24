@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"asterisk-monitor/types"
 	"fmt"
 	"strings"
 	"time"
@@ -12,14 +11,14 @@ import (
 )
 
 type DebugModel struct {
-	monitor       MonitorInterface
-	viewport      viewport.Model
-	debugLogs     string
-	filter        string
-	isRunning     bool
-	debugMode     string // "basic", "audio", "full"
-	audioStats    string
-	ready         bool
+	monitor    MonitorInterface
+	viewport   viewport.Model
+	debugLogs  string
+	filter     string
+	isRunning  bool
+	debugMode  string // "basic", "audio", "full"
+	audioStats string
+	ready      bool
 }
 
 func NewDebugModel(mon MonitorInterface) DebugModel {
@@ -113,7 +112,7 @@ func (m DebugModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.isRunning && m.debugMode == "audio" {
 			m.audioStats = string(msg)
 			m.updateContent()
-			
+
 			// Продолжаем сбор аудиостатистики
 			if m.isRunning {
 				return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
@@ -147,11 +146,11 @@ func (m *DebugModel) startDebug() {
 
 	m.isRunning = true
 	m.debugMode = "basic"
-	
+
 	// Включаем базовые дебаг режимы
 	commands := []string{
 		"asterisk -rx 'sip set debug on'",
-		"asterisk -rx 'rtp set debug on'", 
+		"asterisk -rx 'rtp set debug on'",
 		"asterisk -rx 'core set debug 1'",
 	}
 
@@ -161,7 +160,7 @@ func (m *DebugModel) startDebug() {
 
 	m.debugLogs = "=== BASIC DEBUG MODE STARTED ===\n"
 	m.debugLogs += "SIP Debug: ON\n"
-	m.debugLogs += "RTP Debug: ON\n" 
+	m.debugLogs += "RTP Debug: ON\n"
 	m.debugLogs += "Core Debug: Level 1\n"
 	m.debugLogs += "Filter: " + m.filter + "\n"
 	m.debugLogs += "==============================\n\n"
@@ -183,12 +182,12 @@ func (m *DebugModel) startAudioDebug() {
 
 	m.isRunning = true
 	m.debugMode = "audio"
-	
+
 	// Включаем расширенные дебаг режимы для аудио проблем
 	commands := []string{
 		"asterisk -rx 'sip set debug on'",
 		"asterisk -rx 'rtp set debug on'",
-		"asterisk -rx 'rtcp set debug on'", 
+		"asterisk -rx 'rtcp set debug on'",
 		"asterisk -rx 'core set debug 3'",
 		"asterisk -rx 'jitterbuffer set debug on'",
 	}
@@ -202,7 +201,7 @@ func (m *DebugModel) startAudioDebug() {
 	m.debugLogs += "SIP Debug: ON\n"
 	m.debugLogs += "RTP Debug: ON\n"
 	m.debugLogs += "RTCP Debug: ON\n"
-	m.debugLogs += "Jitterbuffer Debug: ON\n" 
+	m.debugLogs += "Jitterbuffer Debug: ON\n"
 	m.debugLogs += "Core Debug: Level 3\n"
 	m.debugLogs += "Filter: " + m.filter + "\n"
 	m.debugLogs += "================================\n\n"
@@ -229,7 +228,7 @@ func (m *DebugModel) stopDebug() {
 		"asterisk -rx 'sip set debug off'",
 		"asterisk -rx 'rtp set debug off'",
 		"asterisk -rx 'rtcp set debug off'",
-		"asterisk -rx 'core set debug 0'", 
+		"asterisk -rx 'core set debug 0'",
 		"asterisk -rx 'jitterbuffer set debug off'",
 	}
 
@@ -272,13 +271,13 @@ func (m *DebugModel) getDebugLogs() tea.Msg {
 		"timeout 5 asterisk -rvvv 2>&1 | grep -E '%s' | head -20 || echo 'No debug output'",
 		m.filter,
 	)
-	
+
 	result := m.monitor.ExecuteCommand("Debug Logs", cmd)
-	
+
 	if result.Status == "success" && strings.TrimSpace(result.Message) != "" {
 		return debugUpdateMsg(result.Message)
 	}
-	
+
 	return debugUpdateMsg("... waiting for debug events ...")
 }
 
@@ -292,7 +291,7 @@ func (m *DebugModel) getAudioStats() tea.Msg {
 		// Статистика RTP
 		"asterisk -rx 'rtp show stats' 2>/dev/null | head -10",
 		// Активные RTP сессии
-		"asterisk -rx 'rtp show peers' 2>/dev/null | head -10", 
+		"asterisk -rx 'rtp show peers' 2>/dev/null | head -10",
 		// Проблемы с кодеками
 		"asterisk -rx 'core show translation' 2>/dev/null | grep -E '(ulaw|alaw|gsm|g729)'",
 		// Статус джиттер-буферов
@@ -313,7 +312,7 @@ func (m *DebugModel) getAudioStats() tea.Msg {
 			case 0:
 				stats.WriteString("📊 RTP Statistics:\n")
 			case 1:
-				stats.WriteString("\n🔗 RTP Sessions:\n") 
+				stats.WriteString("\n🔗 RTP Sessions:\n")
 			case 2:
 				stats.WriteString("\n🎵 Codec Status:\n")
 			case 3:
@@ -353,7 +352,7 @@ func (m *DebugModel) filterDebugLogs(logs string) string {
 func (m *DebugModel) highlightAudioProblems(line string) string {
 	// Критические проблемы аудио
 	critical := []string{"jitter", "packet loss", "dropped", "out of order", "buffer over", "underrun"}
-	// Проблемы среднего уровня  
+	// Проблемы среднего уровня
 	warnings := []string{"WARNING", "failed", "reject", "timeout", "busy", "congestion"}
 	// Информационные события
 	info := []string{"RTP", "RTCP", "JitterBuffer", "Codec"}
@@ -469,7 +468,7 @@ func (m *DebugModel) footer() string {
 	if m.isRunning {
 		status = "RUNNING 🟢"
 	}
-	
+
 	return lipgloss.NewStyle().
 		Foreground(colorGray).
 		Render(fmt.Sprintf("Status: %s | S:Basic A:Audio X:Stop R:Refresh F:Filter C:Clear Q:Quit", status))
