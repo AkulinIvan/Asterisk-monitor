@@ -550,3 +550,21 @@ func (m *LinuxMonitor) GetSystemMetrics() types.SystemMetrics {
         ServiceState: m.GetServiceStatus(),
     }
 }
+
+func (m *LinuxMonitor) GetRTPStats() string {
+    cmd := exec.Command("asterisk", "-rx", "rtp show stats")
+    output, err := cmd.Output()
+    if err != nil {
+        return "RTP stats unavailable"
+    }
+    return string(output)
+}
+
+func (m *LinuxMonitor) GetJitterBufferStats() string {
+    cmd := exec.Command("asterisk", "-rx", "jitterbuffer show")
+    output, err := cmd.Output()
+    if err != nil {
+        return "Jitterbuffer stats unavailable"
+    }
+    return string(output)
+}
