@@ -31,6 +31,9 @@ func NewBackupModel(mon MonitorInterface) BackupModel {
 	restore.Placeholder = "/path/to/backup.tar.gz"
 
 	vp := viewport.New(80, 20)
+	vp.Style = lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62"))
 
 	return BackupModel{
 		monitor:      mon,
@@ -39,11 +42,14 @@ func NewBackupModel(mon MonitorInterface) BackupModel {
 		restoreInput: restore,
 		results:      []types.CheckResult{},
 		backupsList:  "",
+		ready:        true, // Сразу готов
 	}
 }
 
 func (m BackupModel) Init() tea.Cmd {
-	return m.listBackups
+	m.listBackups()
+	m.updateContent()
+	return nil
 }
 
 func (m BackupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -53,16 +59,21 @@ func (m BackupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "b", "B":
-			return m, m.createBackup
+			m.createBackup()
+			return m, nil
 		case "r", "R":
 			if m.restoreInput.Value() != "" {
-				return m, m.restoreBackup
+				m.restoreBackup()
 			}
+			return m, nil
 		case "l", "L":
-			return m, m.listBackups
+			m.listBackups()
+			return m, nil
 		case "c", "C":
 			m.results = []types.CheckResult{}
+			m.backupsList = ""
 			m.updateContent()
+			return m, nil
 		case "q", "Q", "ctrl+c":
 			return m, tea.Quit
 		case "tab":
@@ -73,6 +84,7 @@ func (m BackupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.restoreInput.Blur()
 				m.backupInput.Focus()
 			}
+			return m, nil
 		}
 	case tea.WindowSizeMsg:
 		if !m.ready {
@@ -81,38 +93,10 @@ func (m BackupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				BorderStyle(lipgloss.RoundedBorder()).
 				BorderForeground(lipgloss.Color("62"))
 			m.ready = true
-			m.updateContent()
 		} else {
 			m.viewport.Width = msg.Width
 			m.viewport.Height = msg.Height - 8
 		}
-	case backupCreatedMsg:
-		m.results = append(m.results, types.CheckResult{
-			Name:      "Backup Created",
-			Status:    "success",
-			Message:   string(msg),
-			Timestamp: time.Now(),
-		})
-		m.updateContent()
-		return m, m.listBackups
-	case backupRestoredMsg:
-		m.results = append(m.results, types.CheckResult{
-			Name:      "Backup Restored",
-			Status:    "success",
-			Message:   string(msg),
-			Timestamp: time.Now(),
-		})
-		m.updateContent()
-	case backupsListedMsg:
-		m.backupsList = string(msg)
-		m.updateContent()
-	case backupErrorMsg:
-		m.results = append(m.results, types.CheckResult{
-			Name:      "Backup Error",
-			Status:    "error",
-			Message:   string(msg),
-			Timestamp: time.Now(),
-		})
 		m.updateContent()
 	}
 
@@ -137,14 +121,7 @@ func (m BackupModel) View() string {
 	return controls.String() + "\n" + m.viewport.View()
 }
 
-// Messages
-type backupCreatedMsg string
-type backupRestoredMsg string
-type backupsListedMsg string
-type backupErrorMsg string
-
-// Commands
-func (m BackupModel) createBackup() tea.Msg {
+func (m *BackupModel) createBackup() {
 	backupPath := m.backupInput.Value()
 	if backupPath == "" {
 		backupPath = "/tmp/asterisk-backups"
@@ -154,122 +131,188 @@ func (m BackupModel) createBackup() tea.Msg {
 	backupFile := fmt.Sprintf("%s/asterisk-backup-%s.tar.gz", backupPath, timestamp)
 	backupDir := fmt.Sprintf("/tmp/asterisk-backup-%s", timestamp)
 
+	// Добавляем сообщение о начале бэкапа
+	m.results = append(m.results, types.CheckResult{
+		Name:      "Backup Started",
+		Status:    "info",
+		Message:   fmt.Sprintf("Creating backup to: %s", backupFile),
+		Timestamp: time.Now(),
+	})
+	m.updateContent()
+
 	commands := []string{
-		fmt.Sprintf("sudo mkdir -p %s", backupPath),
-		fmt.Sprintf("sudo mkdir -p %s", backupDir),
-		"sudo cp -r /etc/asterisk/ " + backupDir + "/",
-		"sudo cp -r /var/lib/asterisk/ " + backupDir + "/ 2>/dev/null || echo 'No /var/lib/asterisk found'",
-		"sudo cp -r /var/spool/asterisk/ " + backupDir + "/ 2>/dev/null || echo 'No /var/spool/asterisk found'",
-		"sudo cp -r /var/log/asterisk/ " + backupDir + "/ 2>/dev/null || echo 'No /var/log/asterisk found'",
-		fmt.Sprintf("sudo tar -czf %s -C %s .", backupFile, backupDir),
-		fmt.Sprintf("sudo rm -rf %s", backupDir),
-		fmt.Sprintf("sudo chmod 644 %s", backupFile),
+		fmt.Sprintf("mkdir -p %s", backupPath),
+		fmt.Sprintf("mkdir -p %s", backupDir),
+		"cp -r /etc/asterisk/ " + backupDir + "/ 2>/dev/null || echo 'No /etc/asterisk access'",
+		"cp -r /var/lib/asterisk/ " + backupDir + "/ 2>/dev/null || echo 'No /var/lib/asterisk access'",
+		"cp -r /var/spool/asterisk/ " + backupDir + "/ 2>/dev/null || echo 'No /var/spool/asterisk access'",
+		"cp -r /var/log/asterisk/ " + backupDir + "/ 2>/dev/null || echo 'No /var/log/asterisk access'",
+		fmt.Sprintf("tar -czf %s -C %s . 2>/dev/null || echo 'Tar failed'", backupFile, backupDir),
+		fmt.Sprintf("rm -rf %s", backupDir),
+		fmt.Sprintf("chmod 644 %s 2>/dev/null || true", backupFile),
 	}
 
-	var results []string
+	// Выполняем команды синхронно
 	for i, cmd := range commands {
 		result := m.monitor.ExecuteCommand(fmt.Sprintf("Backup Step %d", i+1), cmd)
+		m.results = append(m.results, result)
+		m.updateContent()
+		time.Sleep(500 * time.Millisecond) // Задержка для визуального эффекта
+
+		// Если ошибка, прерываем
 		if result.Status == "error" {
 			// Cleanup on error
-			m.monitor.ExecuteCommand("Cleanup", fmt.Sprintf("sudo rm -rf %s %s", backupDir, backupFile))
-			return backupErrorMsg(fmt.Sprintf("Backup failed at step %d: %s", i+1, result.Error))
+			m.monitor.ExecuteCommand("Cleanup", fmt.Sprintf("rm -rf %s %s", backupDir, backupFile))
+			return
 		}
-		results = append(results, result.Message)
 	}
 
 	// Verify backup
-	verifyCmd := fmt.Sprintf("sudo tar -tzf %s | wc -l", backupFile)
+	verifyCmd := fmt.Sprintf("test -f %s && tar -tzf %s | wc -l || echo '0'", backupFile, backupFile)
 	verifyResult := m.monitor.ExecuteCommand("Verify Backup", verifyCmd)
-	if verifyResult.Status == "success" {
+	
+	if verifyResult.Status == "success" && verifyResult.Message != "0" {
 		fileCount := strings.TrimSpace(verifyResult.Message)
-		return backupCreatedMsg(fmt.Sprintf("Backup created successfully: %s (%s files)", backupFile, fileCount))
+		m.results = append(m.results, types.CheckResult{
+			Name:      "Backup Completed",
+			Status:    "success",
+			Message:   fmt.Sprintf("Backup created successfully: %s (%s files)", backupFile, fileCount),
+			Timestamp: time.Now(),
+		})
+	} else {
+		m.results = append(m.results, types.CheckResult{
+			Name:      "Backup Completed",
+			Status:    "warning",
+			Message:   fmt.Sprintf("Backup created but verification failed: %s", backupFile),
+			Timestamp: time.Now(),
+		})
 	}
 
-	return backupCreatedMsg(fmt.Sprintf("Backup created: %s", backupFile))
+	m.updateContent()
+	m.listBackups() // Обновляем список бэкапов
 }
 
-func (m BackupModel) restoreBackup() tea.Msg {
+func (m *BackupModel) restoreBackup() {
 	backupFile := m.restoreInput.Value()
 	if backupFile == "" {
-		return backupErrorMsg("No backup file specified")
+		m.results = append(m.results, types.CheckResult{
+			Name:      "Restore Error",
+			Status:    "error",
+			Message:   "No backup file specified",
+			Timestamp: time.Now(),
+		})
+		m.updateContent()
+		return
 	}
 
+	// Добавляем сообщение о начале восстановления
+	m.results = append(m.results, types.CheckResult{
+		Name:      "Restore Started",
+		Status:    "info",
+		Message:   fmt.Sprintf("Starting restore from: %s", backupFile),
+		Timestamp: time.Now(),
+	})
+	m.updateContent()
+
 	// Check if backup file exists
-	checkCmd := fmt.Sprintf("sudo test -f %s && echo 'exists' || echo 'not found'", backupFile)
+	checkCmd := fmt.Sprintf("test -f %s && echo 'exists' || echo 'not found'", backupFile)
 	checkResult := m.monitor.ExecuteCommand("Check Backup", checkCmd)
 	if !strings.Contains(checkResult.Message, "exists") {
-		return backupErrorMsg(fmt.Sprintf("Backup file not found: %s", backupFile))
+		m.results = append(m.results, types.CheckResult{
+			Name:      "Restore Error",
+			Status:    "error",
+			Message:   fmt.Sprintf("Backup file not found: %s", backupFile),
+			Timestamp: time.Now(),
+		})
+		m.updateContent()
+		return
 	}
 
 	// Create restore directory
 	restoreDir := fmt.Sprintf("/tmp/asterisk-restore-%d", time.Now().Unix())
 
 	commands := []string{
-		fmt.Sprintf("sudo mkdir -p %s", restoreDir),
-		fmt.Sprintf("sudo tar -xzf %s -C %s", backupFile, restoreDir),
+		fmt.Sprintf("mkdir -p %s", restoreDir),
+		fmt.Sprintf("tar -xzf %s -C %s", backupFile, restoreDir),
 
 		// Stop Asterisk before restore
-		"sudo systemctl stop asterisk",
+		"systemctl stop asterisk",
 
 		// Backup current configuration
-		fmt.Sprintf("sudo cp -r /etc/asterisk /etc/asterisk.backup.%d", time.Now().Unix()),
+		fmt.Sprintf("cp -r /etc/asterisk /etc/asterisk.backup.%d", time.Now().Unix()),
 
 		// Restore files
-		fmt.Sprintf("sudo cp -r %s/etc/asterisk/* /etc/asterisk/", restoreDir),
-		fmt.Sprintf("sudo cp -r %s/var/lib/asterisk/* /var/lib/asterisk/ 2>/dev/null || echo 'No lib files to restore'", restoreDir),
-		fmt.Sprintf("sudo cp -r %s/var/spool/asterisk/* /var/spool/asterisk/ 2>/dev/null || echo 'No spool files to restore'", restoreDir),
+		fmt.Sprintf("cp -r %s/etc/asterisk/* /etc/asterisk/ 2>/dev/null || echo 'No config files to restore'", restoreDir),
+		fmt.Sprintf("cp -r %s/var/lib/asterisk/* /var/lib/asterisk/ 2>/dev/null || echo 'No lib files to restore'", restoreDir),
+		fmt.Sprintf("cp -r %s/var/spool/asterisk/* /var/spool/asterisk/ 2>/dev/null || echo 'No spool files to restore'", restoreDir),
 
 		// Fix permissions
-		"sudo chown -R asterisk:asterisk /etc/asterisk/",
-		"sudo chown -R asterisk:asterisk /var/lib/asterisk/ 2>/dev/null || true",
-		"sudo chown -R asterisk:asterisk /var/spool/asterisk/ 2>/dev/null || true",
+		"chown -R asterisk:asterisk /etc/asterisk/ 2>/dev/null || true",
+		"chown -R asterisk:asterisk /var/lib/asterisk/ 2>/dev/null || true",
+		"chown -R asterisk:asterisk /var/spool/asterisk/ 2>/dev/null || true",
 
 		// Start Asterisk
-		"sudo systemctl start asterisk",
+		"systemctl start asterisk",
 
 		// Cleanup
-		fmt.Sprintf("sudo rm -rf %s", restoreDir),
+		fmt.Sprintf("rm -rf %s", restoreDir),
 	}
 
+	// Выполняем команды синхронно
 	for i, cmd := range commands {
 		result := m.monitor.ExecuteCommand(fmt.Sprintf("Restore Step %d", i+1), cmd)
+		m.results = append(m.results, result)
+		m.updateContent()
+		time.Sleep(500 * time.Millisecond)
+
+		// Если ошибка, пытаемся восстановить
 		if result.Status == "error" {
-			// Restore original backup and start Asterisk
+			// Emergency restore
 			m.monitor.ExecuteCommand("Emergency Restore",
-				fmt.Sprintf("sudo cp -r /etc/asterisk.backup.%d/* /etc/asterisk/ && sudo systemctl start asterisk", time.Now().Unix()))
-			return backupErrorMsg(fmt.Sprintf("Restore failed at step %d: %s", i+1, result.Error))
+				fmt.Sprintf("cp -r /etc/asterisk.backup.%d/* /etc/asterisk/ && systemctl start asterisk", time.Now().Unix()))
+			return
 		}
 	}
 
-	return backupRestoredMsg(fmt.Sprintf("Backup restored successfully from: %s", backupFile))
+	m.results = append(m.results, types.CheckResult{
+		Name:      "Restore Completed",
+		Status:    "success",
+		Message:   fmt.Sprintf("Backup restored successfully from: %s", backupFile),
+		Timestamp: time.Now(),
+	})
+	m.updateContent()
 }
 
-func (m BackupModel) listBackups() tea.Msg {
+func (m *BackupModel) listBackups() {
 	backupPath := m.backupInput.Value()
 	if backupPath == "" {
 		backupPath = "/tmp/asterisk-backups"
 	}
 
-	cmd := fmt.Sprintf("sudo ls -la %s/asterisk-backup-*.tar.gz 2>/dev/null | head -20", backupPath)
+	cmd := fmt.Sprintf("ls -la %s/asterisk-backup-*.tar.gz 2>/dev/null | head -20 || echo 'No backups found'", backupPath)
 	result := m.monitor.ExecuteCommand("List Backups", cmd)
 
-	if result.Status == "error" || strings.Contains(result.Message, "No such file") {
-		return backupsListedMsg("No backups found in " + backupPath)
+	if result.Status == "success" && !strings.Contains(result.Message, "No backups found") {
+		// Get backup sizes
+		sizeCmd := fmt.Sprintf("du -h %s/asterisk-backup-*.tar.gz 2>/dev/null | sort -hr || echo 'No size info'", backupPath)
+		sizeResult := m.monitor.ExecuteCommand("Backup Sizes", sizeCmd)
+
+		m.backupsList = "Available Backups:\n" + result.Message
+		if sizeResult.Status == "success" {
+			m.backupsList += "\n\nSizes:\n" + sizeResult.Message
+		}
+	} else {
+		m.backupsList = "No backups found in " + backupPath
 	}
 
-	// Get backup sizes
-	sizeCmd := fmt.Sprintf("sudo du -h %s/asterisk-backup-*.tar.gz 2>/dev/null | sort -hr", backupPath)
-	sizeResult := m.monitor.ExecuteCommand("Backup Sizes", sizeCmd)
-
-	list := "Available Backups:\n" + result.Message
-	if sizeResult.Status == "success" {
-		list += "\n\nSizes:\n" + sizeResult.Message
-	}
-
-	return backupsListedMsg(list)
+	m.updateContent()
 }
 
 func (m *BackupModel) updateContent() {
+	if !m.ready {
+		return
+	}
+
 	var content strings.Builder
 
 	content.WriteString(TitleStyle.Render("💾 Asterisk Backup & Restore"))
@@ -303,6 +346,10 @@ func (m *BackupModel) renderResults() string {
 			statusIcon = "✅"
 		case "error":
 			statusIcon = "❌"
+		case "warning":
+			statusIcon = "⚠️"
+		case "info":
+			statusIcon = "ℹ️"
 		default:
 			statusIcon = "🔍"
 		}
@@ -345,11 +392,11 @@ func (m *BackupModel) getBackupStats() string {
 	}
 
 	statsCmd := fmt.Sprintf(`
-        count=$(sudo find %s -name "asterisk-backup-*.tar.gz" -type f 2>/dev/null | wc -l)
-        total_size=$(sudo du -ch %s/asterisk-backup-*.tar.gz 2>/dev/null | grep total | cut -f1)
-        latest=$(sudo ls -t %s/asterisk-backup-*.tar.gz 2>/dev/null | head -1)
+        count=$(find %s -name "asterisk-backup-*.tar.gz" -type f 2>/dev/null | wc -l)
+        total_size=$(du -ch %s/asterisk-backup-*.tar.gz 2>/dev/null | grep total | cut -f1)
+        latest=$(ls -t %s/asterisk-backup-*.tar.gz 2>/dev/null | head -1)
         if [ -n "$latest" ]; then
-            latest_date=$(sudo stat -c %%y "$latest" 2>/dev/null | cut -d' ' -f1)
+            latest_date=$(stat -c %%y "$latest" 2>/dev/null | cut -d' ' -f1)
         else
             latest_date="N/A"
         fi
