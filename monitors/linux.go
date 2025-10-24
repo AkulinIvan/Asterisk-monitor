@@ -317,17 +317,15 @@ func (m *LinuxMonitor) ExecuteCommand(name, command string) types.CheckResult {
 // GetAsteriskLogs возвращает логи Asterisk
 func (m *LinuxMonitor) GetAsteriskLogs(lines int, level, filter string) string {
     if lines == 0 {
-        lines = 30
+        lines = 50
     }
     
     // Используем ротацию логов чтобы обновить файлы
     rotateCmd := "asterisk -rx 'logger rotate' 2>/dev/null"
     m.ExecuteCommand("Rotate Logs", rotateCmd)
+    time.Sleep(100 * time.Millisecond)
     
-    // Даем время на ротацию
-    time.Sleep(200 * time.Millisecond)
-    
-    // Пробуем читать логи из файла
+    // Читаем логи из файла
     cmd := fmt.Sprintf("tail -%d /var/log/asterisk/messages 2>/dev/null", lines)
     result := m.ExecuteCommand("Logs", cmd)
     
@@ -337,14 +335,21 @@ func (m *LinuxMonitor) GetAsteriskLogs(lines int, level, filter string) string {
         result = m.ExecuteCommand("Logs Sudo", cmd)
     }
     
-    // Если все еще ошибка, возвращаем системную информацию вместо логов
-    if result.Status == "error" || strings.TrimSpace(result.Message) == "" {
-        return m.getSystemInfoInstead(lines)
+    // Если все еще ошибка, показываем информацию о доступных логах
+    if result.Status == "error" {
+        return m.getLogsDebugInfo()
     }
     
-    output := result.Message
+    rawLogs := result.Message
+    
+    // Если логи пустые, возможно файл не существует
+    if strings.TrimSpace(rawLogs) == "" {
+        return "Log file is empty or does not exist. Check Asterisk logging configuration."
+    }
     
     // Применяем фильтры
+    output := rawLogs
+    
     if level != "ALL" && level != "" {
         output = m.filterLogsByLevel(output, level)
     }
@@ -353,11 +358,66 @@ func (m *LinuxMonitor) GetAsteriskLogs(lines int, level, filter string) string {
         output = m.filterLogs(output, filter)
     }
     
+    // Если после фильтрации ничего не осталось, показываем отладочную информацию
     if strings.TrimSpace(output) == "" {
-        return fmt.Sprintf("No log entries found for level: %s, filter: %s", level, filter)
+        return m.getFilterDebugInfo(rawLogs, level, filter)
     }
     
     return output
+}
+
+func (m *LinuxMonitor) getLogsDebugInfo() string {
+    var debug strings.Builder
+    debug.WriteString("=== Logs Debug Information ===\n\n")
+    
+    // Проверяем доступ к файлам логов
+    checks := []struct {
+        name string
+        cmd  string
+    }{
+        {"Messages File", "ls -la /var/log/asterisk/messages 2>&1 || echo 'Not found'"},
+        {"Full File", "ls -la /var/log/asterisk/full 2>&1 || echo 'Not found'"},
+        {"Asterisk Status", "asterisk -rx 'core show version' 2>&1"},
+        {"Logger Status", "asterisk -rx 'logger show channels' 2>&1"},
+    }
+    
+    for _, check := range checks {
+        result := m.ExecuteCommand(check.name, check.cmd)
+        debug.WriteString(fmt.Sprintf("● %s:\n%s\n\n", check.name, result.Message))
+    }
+    
+    debug.WriteString("Try these commands manually:\n")
+    debug.WriteString("  tail -50 /var/log/asterisk/messages\n")
+    debug.WriteString("  sudo tail -50 /var/log/asterisk/messages\n")
+    debug.WriteString("  asterisk -rx 'logger show channels'\n")
+    
+    return debug.String()
+}
+
+func (m *LinuxMonitor) getFilterDebugInfo(rawLogs, level, filter string) string {
+    var debug strings.Builder
+    debug.WriteString("=== Filter Debug Information ===\n\n")
+    
+    debug.WriteString(fmt.Sprintf("Level filter: %s\n", level))
+    debug.WriteString(fmt.Sprintf("Text filter: %s\n\n", filter))
+    
+    // Показываем первые несколько строк сырых логов для анализа
+    lines := strings.Split(rawLogs, "\n")
+    debug.WriteString("First 10 lines of raw logs:\n")
+    for i := 0; i < len(lines) && i < 10; i++ {
+        if lines[i] != "" {
+            debug.WriteString(fmt.Sprintf("%d: %s\n", i+1, lines[i]))
+        }
+    }
+    
+    debug.WriteString("\nCommon log patterns to try:\n")
+    debug.WriteString("• Level: ALL (show all logs)\n")
+    debug.WriteString("• Level: NOTICE (informational messages)\n") 
+    debug.WriteString("• Level: WARNING (warning messages)\n")
+    debug.WriteString("• Filter: sip (SIP related messages)\n")
+    debug.WriteString("• Filter: chan (channel messages)\n")
+    
+    return debug.String()
 }
 
 func (m *LinuxMonitor) getSystemInfoInstead(lines int) string {
@@ -405,36 +465,50 @@ func (m *LinuxMonitor) filterLogsByLevel(logs, level string) string {
         
         switch levelLower {
         case "error":
+            // Разные варианты обозначения ошибок в Asterisk
             if strings.Contains(lineLower, "error") || 
                strings.Contains(lineLower, "err[") ||
+               strings.Contains(lineLower, ".err]") ||
                strings.Contains(lineLower, "failed") ||
+               strings.Contains(lineLower, "failure") ||
+               strings.Contains(lineLower, "reject") ||
                strings.Contains(lineLower, "unable") ||
-               strings.Contains(lineLower, "reject") {
+               strings.Contains(lineLower, "invalid") {
                 filtered = append(filtered, line)
             }
         case "warning", "warn":
             if strings.Contains(lineLower, "warning") || 
                strings.Contains(lineLower, "warn[") ||
-               strings.Contains(lineLower, "deprecated") {
-                filtered = append(filtered, line)
-            }
-        case "debug":
-            if strings.Contains(lineLower, "debug") || 
-               strings.Contains(lineLower, "dbg[") {
+               strings.Contains(lineLower, ".wrn]") ||
+               strings.Contains(lineLower, "deprecated") ||
+               strings.Contains(lineLower, "not found") {
                 filtered = append(filtered, line)
             }
         case "notice":
             if strings.Contains(lineLower, "notice") || 
                strings.Contains(lineLower, "ntc[") ||
+               strings.Contains(lineLower, ".ntc]") ||
                strings.Contains(lineLower, "registered") ||
-               strings.Contains(lineLower, "unregistered") {
+               strings.Contains(lineLower, "unregistered") ||
+               strings.Contains(lineLower, "connected") ||
+               strings.Contains(lineLower, "destroyed") {
+                filtered = append(filtered, line)
+            }
+        case "debug":
+            if strings.Contains(lineLower, "debug") || 
+               strings.Contains(lineLower, "dbg[") ||
+               strings.Contains(lineLower, ".dbg]") {
                 filtered = append(filtered, line)
             }
         case "verbose":
             if strings.Contains(lineLower, "verbose") || 
-               strings.Contains(lineLower, "verb[") {
+               strings.Contains(lineLower, "verb[") ||
+               strings.Contains(lineLower, ".verb]") {
                 filtered = append(filtered, line)
             }
+        case "all", "":
+            // Без фильтра - все строки
+            filtered = append(filtered, line)
         default:
             // Для неизвестных уровней ищем точное совпадение
             if strings.Contains(lineLower, levelLower) {
