@@ -316,57 +316,149 @@ func (m *LinuxMonitor) ExecuteCommand(name, command string) types.CheckResult {
 
 // GetAsteriskLogs возвращает логи Asterisk
 func (m *LinuxMonitor) GetAsteriskLogs(lines int, level, filter string) string {
-    // Пробуем разные варианты доступа к логам
-    var cmd string
-    
     if lines == 0 {
-        lines = 50
+        lines = 30
     }
     
-    // Вариант 1: Без sudo (если пользователь имеет доступ)
-    cmd = fmt.Sprintf("tail -%d /var/log/asterisk/messages 2>/dev/null", lines)
+    // Используем ротацию логов чтобы обновить файлы
+    rotateCmd := "asterisk -rx 'logger rotate' 2>/dev/null"
+    m.ExecuteCommand("Rotate Logs", rotateCmd)
     
-    // Вариант 2: Через asterisk command (если доступно)
-    // cmd = fmt.Sprintf("asterisk -rx 'logger rotate' && sleep 1 && tail -%d /var/log/asterisk/messages 2>/dev/null", lines)
+    // Даем время на ротацию
+    time.Sleep(200 * time.Millisecond)
     
-    if level != "ALL" {
-        cmd += fmt.Sprintf(" | grep -i %s", level)
-    }
-    if filter != "" {
-        cmd += fmt.Sprintf(" | grep -i \"%s\"", filter)
-    }
-    
+    // Пробуем читать логи из файла
+    cmd := fmt.Sprintf("tail -%d /var/log/asterisk/messages 2>/dev/null", lines)
     result := m.ExecuteCommand("Logs", cmd)
     
-    // Если не получилось без sudo, пробуем с sudo
+    // Если доступ запрещен, пробуем с sudo
     if result.Status == "error" || strings.Contains(result.Message, "Permission denied") {
-        // Вариант с sudo (требует настройки sudoers)
-        cmd = fmt.Sprintf("sudo tail -%d /var/log/asterisk/messages", lines)
-        if level != "ALL" {
-            cmd += fmt.Sprintf(" | grep -i %s", level)
-        }
-        if filter != "" {
-            cmd += fmt.Sprintf(" | grep -i \"%s\"", filter)
-        }
-        result = m.ExecuteCommand("Logs", cmd)
+        cmd = fmt.Sprintf("sudo tail -%d /var/log/asterisk/messages 2>/dev/null", lines)
+        result = m.ExecuteCommand("Logs Sudo", cmd)
     }
     
-    // Если все еще ошибка, возвращаем альтернативный способ
-    if result.Status == "error" {
-        // Пробуем через asterisk CLI команды
-        asteriskCmd := fmt.Sprintf("asterisk -rx 'logger reload' && asterisk -rx 'console show channel' | head -%d", lines)
-        if level != "ALL" {
-            asteriskCmd = fmt.Sprintf("asterisk -rx 'logger reload' && asterisk -rx 'console show channel %s' | head -%d", level, lines)
+    // Если все еще ошибка, возвращаем системную информацию вместо логов
+    if result.Status == "error" || strings.TrimSpace(result.Message) == "" {
+        return m.getSystemInfoInstead(lines)
+    }
+    
+    output := result.Message
+    
+    // Применяем фильтры
+    if level != "ALL" && level != "" {
+        output = m.filterLogsByLevel(output, level)
+    }
+    
+    if filter != "" {
+        output = m.filterLogs(output, filter)
+    }
+    
+    if strings.TrimSpace(output) == "" {
+        return fmt.Sprintf("No log entries found for level: %s, filter: %s", level, filter)
+    }
+    
+    return output
+}
+
+func (m *LinuxMonitor) getSystemInfoInstead(lines int) string {
+    if lines == 0 {
+        lines = 20
+    }
+    
+    var output strings.Builder
+    output.WriteString("=== System Information (Logs unavailable) ===\n\n")
+    
+    // Получаем системную информацию через доступные команды
+    commands := []struct {
+        name string
+        cmd  string
+    }{
+        {"Uptime", "asterisk -rx 'core show uptime'"},
+        {"Version", "asterisk -rx 'core show version'"},
+        {"Channels", "asterisk -rx 'core show channels count'"},
+        {"Calls", "asterisk -rx 'core show calls'"},
+        {"SIP Peers", "asterisk -rx 'sip show peers' | head -10"},
+        {"System Load", "uptime"},
+    }
+    
+    for _, item := range commands {
+        result := m.ExecuteCommand(item.name, item.cmd)
+        if result.Status == "success" {
+            output.WriteString(fmt.Sprintf("● %s: %s\n", item.name, strings.TrimSpace(result.Message)))
         }
-        altResult := m.ExecuteCommand("Logs Alternative", asteriskCmd)
-        if altResult.Status == "success" {
-            return altResult.Message
-        }
+    }
+    
+    output.WriteString("\nTo access logs, run:\n")
+    output.WriteString("  sudo tail -f /var/log/asterisk/messages\n")
+    output.WriteString("Or check permissions on /var/log/asterisk/ directory\n")
+    
+    return output.String()
+}
+
+func (m *LinuxMonitor) filterLogsByLevel(logs, level string) string {
+    levelLower := strings.ToLower(level)
+    lines := strings.Split(logs, "\n")
+    var filtered []string
+    
+    for _, line := range lines {
+        lineLower := strings.ToLower(line)
         
-        return "Unable to access Asterisk logs. Check permissions or run with sudo."
+        switch levelLower {
+        case "error":
+            if strings.Contains(lineLower, "error") || 
+               strings.Contains(lineLower, "err[") ||
+               strings.Contains(lineLower, "failed") ||
+               strings.Contains(lineLower, "unable") ||
+               strings.Contains(lineLower, "reject") {
+                filtered = append(filtered, line)
+            }
+        case "warning", "warn":
+            if strings.Contains(lineLower, "warning") || 
+               strings.Contains(lineLower, "warn[") ||
+               strings.Contains(lineLower, "deprecated") {
+                filtered = append(filtered, line)
+            }
+        case "debug":
+            if strings.Contains(lineLower, "debug") || 
+               strings.Contains(lineLower, "dbg[") {
+                filtered = append(filtered, line)
+            }
+        case "notice":
+            if strings.Contains(lineLower, "notice") || 
+               strings.Contains(lineLower, "ntc[") ||
+               strings.Contains(lineLower, "registered") ||
+               strings.Contains(lineLower, "unregistered") {
+                filtered = append(filtered, line)
+            }
+        case "verbose":
+            if strings.Contains(lineLower, "verbose") || 
+               strings.Contains(lineLower, "verb[") {
+                filtered = append(filtered, line)
+            }
+        default:
+            // Для неизвестных уровней ищем точное совпадение
+            if strings.Contains(lineLower, levelLower) {
+                filtered = append(filtered, line)
+            }
+        }
     }
     
-    return result.Message
+    return strings.Join(filtered, "\n")
+}
+
+// filterLogs фильтрует логи по тексту
+func (m *LinuxMonitor) filterLogs(logs, filter string) string {
+    lines := strings.Split(logs, "\n")
+    var filtered []string
+    filterLower := strings.ToLower(filter)
+    
+    for _, line := range lines {
+        if strings.Contains(strings.ToLower(line), filterLower) {
+            filtered = append(filtered, line)
+        }
+    }
+    
+    return strings.Join(filtered, "\n")
 }
 
 // GetSystemMetrics возвращает полные системные метрики
