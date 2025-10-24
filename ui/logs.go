@@ -26,13 +26,13 @@ func NewLogsModel(mon MonitorInterface) LogsModel {
 	lines.SetValue("50")
 
 	level := textinput.New()
-	level.Placeholder = "ERROR"
-	level.SetValue("ERROR")
+	level.Placeholder = "ALL"
+	level.SetValue("ALL")
 
 	filter := textinput.New()
 	filter.Placeholder = "Filter text..."
 
-	vp := viewport.New(80, 20)
+	vp := viewport.New(100, 200)
 	vp.Style = lipgloss.NewStyle().
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("62"))
