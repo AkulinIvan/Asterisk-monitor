@@ -28,23 +28,44 @@ func (m *LinuxMonitor) GetAsteriskStatus() string {
 
 // GetAsteriskPID возвращает PID процесса Asterisk
 func (m *LinuxMonitor) GetAsteriskPID() string {
-    cmd := exec.Command("sh", "-c", "pgrep asterisk")
+    // Получаем основной PID Asterisk (не safe_asterisk)
+    cmd := exec.Command("sh", "-c", "ps aux | grep asterisk | grep -v grep | grep -v safe_asterisk | awk '{print $2}' | head -1")
     output, err := cmd.Output()
     if err != nil {
         return "N/A"
     }
-    return strings.TrimSpace(string(output))
+    pid := strings.TrimSpace(string(output))
+    if pid == "" {
+        return "N/A"
+    }
+    return pid
 }
 
 // GetServiceStatus возвращает статус systemd сервиса
 func (m *LinuxMonitor) GetServiceStatus() string {
-    cmd := exec.Command("sh", "-c", "systemctl is-active asterisk 2>/dev/null || echo 'not-found'")
+    cmd := exec.Command("sh", "-c", "systemctl is-active asterisk 2>/dev/null || echo 'unknown'")
     output, err := cmd.Output()
     
     if err != nil {
         return "unknown"
     }
     return strings.TrimSpace(string(output))
+}
+
+func (m *LinuxMonitor) GetSIPPeersDetail() string {
+    cmd := exec.Command("asterisk", "-rx", "sip show peers")
+    output, err := cmd.Output()
+    
+    if err != nil {
+        return "Error getting SIP peers details"
+    }
+    
+    // Возвращаем последние 10 строк для диагностики
+    lines := strings.Split(string(output), "\n")
+    if len(lines) > 10 {
+        return strings.Join(lines[len(lines)-10:], "\n")
+    }
+    return string(output)
 }
 
 // GetSIPPeersCount возвращает количество онлайн и общее число SIP пиров
@@ -61,11 +82,27 @@ func (m *LinuxMonitor) GetSIPPeersCount() (int, int) {
     lines := strings.Split(string(output), "\n")
     
     for _, line := range lines {
-        if strings.Contains(line, "/") && !strings.Contains(line, "Name/username") {
-            total++
-            if strings.Contains(line, "OK") && strings.Contains(line, "0000") {
-                online++
-            }
+        trimmed := strings.TrimSpace(line)
+        
+        // Пропускаем заголовки, пустые строки и итоговую строку
+        if strings.Contains(trimmed, "Name/username") || 
+           trimmed == "" || 
+           strings.Contains(trimmed, "sip peers") {
+            continue
+        }
+        
+        // Разбиваем строку на поля
+        fields := strings.Fields(trimmed)
+        if len(fields) < 6 {
+            continue
+        }
+        
+        total++
+        
+        // Проверяем статус (обычно предпоследнее поле)
+        statusField := fields[len(fields)-2]
+        if statusField == "OK" || statusField == "Unmonitored" {
+            online++
         }
     }
     

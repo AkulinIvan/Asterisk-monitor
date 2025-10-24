@@ -14,6 +14,7 @@ type MonitorInterface interface {
     GetAsteriskPID() string
     GetServiceStatus() string
     GetSIPPeersCount() (int, int)
+    GetSIPPeersDetail() string
     GetActiveCallsCount() int
     GetActiveChannels() []types.ChannelInfo
     GetAsteriskUptime() string
