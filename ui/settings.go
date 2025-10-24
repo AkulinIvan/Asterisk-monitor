@@ -29,10 +29,6 @@ type SettingsModel struct {
 	ready      bool
 }
 
-// Settings messages
-type SettingsSavedMsg string
-type SettingsErrorMsg string
-
 // NewSettingsModel creates a new settings model
 func NewSettingsModel(cfg ConfigManagerInterface) SettingsModel {
 	currentConfig := cfg.Get()
@@ -94,6 +90,9 @@ func NewSettingsModel(cfg ConfigManagerInterface) SettingsModel {
 	inputs[0].Focus()
 
 	vp := viewport.New(80, 20)
+	vp.Style = lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62"))
 
 	return SettingsModel{
 		config:     cfg,
@@ -101,10 +100,12 @@ func NewSettingsModel(cfg ConfigManagerInterface) SettingsModel {
 		inputs:     inputs,
 		focusIndex: 0,
 		savedMsg:   "",
+		ready:      true, // Сразу готов
 	}
 }
 
 func (m SettingsModel) Init() tea.Cmd {
+	m.updateContent()
 	return textinput.Blink
 }
 
@@ -121,7 +122,8 @@ func (m SettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			s := msg.String()
 
 			if s == "enter" && m.focusIndex == len(m.inputs) {
-				return m, m.saveSettings
+				m.saveSettings()
+				return m, nil
 			}
 
 			if s == "up" || s == "shift+tab" {
@@ -150,9 +152,11 @@ func (m SettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateContent()
 			return m, tea.Batch(cmds...)
 		case "s", "S":
-			return m, m.saveSettings
+			m.saveSettings()
+			return m, nil
 		case "r", "R":
-			return m, m.resetToDefaults
+			m.resetToDefaults()
+			return m, nil
 		}
 	case tea.WindowSizeMsg:
 		if !m.ready {
@@ -161,16 +165,10 @@ func (m SettingsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				BorderStyle(lipgloss.RoundedBorder()).
 				BorderForeground(lipgloss.Color("62"))
 			m.ready = true
-			m.updateContent()
 		} else {
 			m.viewport.Width = msg.Width
 			m.viewport.Height = msg.Height - 2
 		}
-	case SettingsSavedMsg:
-		m.savedMsg = string(msg)
-		m.updateContent()
-	case SettingsErrorMsg:
-		m.savedMsg = errorStyle.Render(string(msg))
 		m.updateContent()
 	}
 
@@ -191,8 +189,7 @@ func (m SettingsModel) View() string {
 	return m.viewport.View() + "\n" + m.footer()
 }
 
-// Commands
-func (m SettingsModel) saveSettings() tea.Msg {
+func (m *SettingsModel) saveSettings() {
 	newConfig := &types.Config{}
 
 	// Parse Asterisk settings
@@ -223,26 +220,36 @@ func (m SettingsModel) saveSettings() tea.Msg {
 
 	// Validate settings
 	if newConfig.Asterisk.Host == "" {
-		return SettingsErrorMsg("Host cannot be empty")
+		m.savedMsg = errorStyle.Render("Host cannot be empty")
+		m.updateContent()
+		return
 	}
 	if newConfig.Asterisk.AMIPort == "" {
-		return SettingsErrorMsg("AMI Port cannot be empty")
+		m.savedMsg = errorStyle.Render("AMI Port cannot be empty")
+		m.updateContent()
+		return
 	}
 	if newConfig.Monitoring.RefreshInterval < 5 {
-		return SettingsErrorMsg("Refresh interval must be at least 5 seconds")
+		m.savedMsg = errorStyle.Render("Refresh interval must be at least 5 seconds")
+		m.updateContent()
+		return
 	}
 
 	// Save configuration
 	if err := m.config.Update(newConfig); err != nil {
-		return SettingsErrorMsg(fmt.Sprintf("Failed to save settings: %v", err))
+		m.savedMsg = errorStyle.Render(fmt.Sprintf("Failed to save settings: %v", err))
+	} else {
+		m.savedMsg = successStyle.Render("✅ Settings saved successfully!")
 	}
 
-	return SettingsSavedMsg("✅ Settings saved successfully!")
+	m.updateContent()
 }
 
-func (m SettingsModel) resetToDefaults() tea.Msg {
+func (m *SettingsModel) resetToDefaults() {
 	if err := m.config.CreateDefault(); err != nil {
-		return SettingsErrorMsg(fmt.Sprintf("Failed to reset settings: %v", err))
+		m.savedMsg = errorStyle.Render(fmt.Sprintf("Failed to reset settings: %v", err))
+		m.updateContent()
+		return
 	}
 
 	// Reload inputs with default values
@@ -257,11 +264,15 @@ func (m SettingsModel) resetToDefaults() tea.Msg {
 	m.inputs[7].SetValue(fmt.Sprintf("%t", defaultConfig.Security.CheckPasswords))
 	m.inputs[8].SetValue(fmt.Sprintf("%t", defaultConfig.Security.CheckSSL))
 
+	m.savedMsg = successStyle.Render("✅ Settings reset to defaults!")
 	m.updateContent()
-	return SettingsSavedMsg("✅ Settings reset to defaults!")
 }
 
 func (m *SettingsModel) updateContent() {
+	if !m.ready {
+		return
+	}
+
 	var content strings.Builder
 
 	content.WriteString(TitleStyle.Render("⚙️ Asterisk Monitor Settings"))
@@ -357,45 +368,44 @@ func (m *SettingsModel) footer() string {
 		Render(help)
 }
 
-
 func (m *SettingsModel) GetContentForTesting() string {
-    var content strings.Builder
+	var content strings.Builder
 
-    content.WriteString(TitleStyle.Render("⚙️ Asterisk Monitor Settings"))
-    content.WriteString("\n\n")
+	content.WriteString(TitleStyle.Render("⚙️ Asterisk Monitor Settings"))
+	content.WriteString("\n\n")
 
-    if m.savedMsg != "" {
-        content.WriteString(m.savedMsg)
-        content.WriteString("\n\n")
-    }
+	if m.savedMsg != "" {
+		content.WriteString(m.savedMsg)
+		content.WriteString("\n\n")
+	}
 
-    // Asterisk Settings
-    content.WriteString(BorderStyle().Render("Asterisk Configuration:\n"))
-    for i := 0; i < 4; i++ {
-        content.WriteString(m.inputs[i].View())
-        content.WriteString("\n")
-    }
-    content.WriteString("\n")
+	// Asterisk Settings
+	content.WriteString(BorderStyle().Render("Asterisk Configuration:\n"))
+	for i := 0; i < 4; i++ {
+		content.WriteString(m.inputs[i].View())
+		content.WriteString("\n")
+	}
+	content.WriteString("\n")
 
-    // Monitoring Settings  
-    content.WriteString(BorderStyle().Render("Monitoring Configuration:\n"))
-    for i := 4; i < 6; i++ {
-        content.WriteString(m.inputs[i].View())
-        content.WriteString("\n")
-    }
-    content.WriteString("\n")
+	// Monitoring Settings  
+	content.WriteString(BorderStyle().Render("Monitoring Configuration:\n"))
+	for i := 4; i < 6; i++ {
+		content.WriteString(m.inputs[i].View())
+		content.WriteString("\n")
+	}
+	content.WriteString("\n")
 
-    // Security Settings
-    content.WriteString(BorderStyle().Render("Security Configuration:\n"))
-    content.WriteString("Note: Use 'true' or 'false' for security settings\n")
-    for i := 6; i < 9; i++ {
-        content.WriteString(m.inputs[i].View())
-        content.WriteString("\n")
-    }
-    content.WriteString("\n")
+	// Security Settings
+	content.WriteString(BorderStyle().Render("Security Configuration:\n"))
+	content.WriteString("Note: Use 'true' or 'false' for security settings\n")
+	for i := 6; i < 9; i++ {
+		content.WriteString(m.inputs[i].View())
+		content.WriteString("\n")
+	}
+	content.WriteString("\n")
 
-    // Current configuration info
-    content.WriteString(m.renderCurrentConfig())
+	// Current configuration info
+	content.WriteString(m.renderCurrentConfig())
 
-    return content.String()
+	return content.String()
 }
