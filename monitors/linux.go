@@ -316,7 +316,19 @@ func (m *LinuxMonitor) ExecuteCommand(name, command string) types.CheckResult {
 
 // GetAsteriskLogs возвращает логи Asterisk
 func (m *LinuxMonitor) GetAsteriskLogs(lines int, level, filter string) string {
-    cmd := fmt.Sprintf("sudo tail -%d /var/log/asterisk/messages", lines)
+    // Пробуем разные варианты доступа к логам
+    var cmd string
+    
+    if lines == 0 {
+        lines = 50
+    }
+    
+    // Вариант 1: Без sudo (если пользователь имеет доступ)
+    cmd = fmt.Sprintf("tail -%d /var/log/asterisk/messages 2>/dev/null", lines)
+    
+    // Вариант 2: Через asterisk command (если доступно)
+    // cmd = fmt.Sprintf("asterisk -rx 'logger rotate' && sleep 1 && tail -%d /var/log/asterisk/messages 2>/dev/null", lines)
+    
     if level != "ALL" {
         cmd += fmt.Sprintf(" | grep -i %s", level)
     }
@@ -325,6 +337,35 @@ func (m *LinuxMonitor) GetAsteriskLogs(lines int, level, filter string) string {
     }
     
     result := m.ExecuteCommand("Logs", cmd)
+    
+    // Если не получилось без sudo, пробуем с sudo
+    if result.Status == "error" || strings.Contains(result.Message, "Permission denied") {
+        // Вариант с sudo (требует настройки sudoers)
+        cmd = fmt.Sprintf("sudo tail -%d /var/log/asterisk/messages", lines)
+        if level != "ALL" {
+            cmd += fmt.Sprintf(" | grep -i %s", level)
+        }
+        if filter != "" {
+            cmd += fmt.Sprintf(" | grep -i \"%s\"", filter)
+        }
+        result = m.ExecuteCommand("Logs", cmd)
+    }
+    
+    // Если все еще ошибка, возвращаем альтернативный способ
+    if result.Status == "error" {
+        // Пробуем через asterisk CLI команды
+        asteriskCmd := fmt.Sprintf("asterisk -rx 'logger reload' && asterisk -rx 'console show channel' | head -%d", lines)
+        if level != "ALL" {
+            asteriskCmd = fmt.Sprintf("asterisk -rx 'logger reload' && asterisk -rx 'console show channel %s' | head -%d", level, lines)
+        }
+        altResult := m.ExecuteCommand("Logs Alternative", asteriskCmd)
+        if altResult.Status == "success" {
+            return altResult.Message
+        }
+        
+        return "Unable to access Asterisk logs. Check permissions or run with sudo."
+    }
+    
     return result.Message
 }
 
