@@ -12,14 +12,17 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// MonitorInterfaceLogs определяет интерфейс для работы с логами
 type MonitorInterfaceLogs interface {
-	// GetAsteriskLogs возвращает логи Asterisk с фильтрацией
-	GetAsteriskLogs(lines int, level, filter string) string
-	// ExecuteCommand выполняет команду Asterisk
-	ExecuteCommand(command string, args string) types.CheckResult
-	// GetActiveCallsCount возвращает количество активных звонков
-	GetActiveCallsCount() int
-    
+    // GetAsteriskLogs возвращает логи Asterisk с фильтрацией
+    GetAsteriskLogs(lines int, level, filter string) string
+    // ExecuteCommand выполняет команду Asterisk
+    ExecuteCommand(name, command string) types.CheckResult
+    // GetActiveCallsCount возвращает количество активных звонков
+    GetActiveCallsCount() int
+    // Добавляем недостающие методы из основного интерфейса
+    GetAsteriskStatus() string
+    GetSystemMetrics() types.SystemMetrics
 }
 
 type LogsModel struct {
