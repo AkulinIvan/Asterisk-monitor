@@ -4,29 +4,14 @@ import (
 	"strconv"
 	"strings"
 
-	"asterisk-monitor/types"
-
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-// MonitorInterfaceLogs определяет интерфейс для работы с логами
-type MonitorInterfaceLogs interface {
-    // GetAsteriskLogs возвращает логи Asterisk с фильтрацией
-    GetAsteriskLogs(lines int, level, filter string) string
-    // ExecuteCommand выполняет команду Asterisk
-    ExecuteCommand(name, command string) types.CheckResult
-    // GetActiveCallsCount возвращает количество активных звонков
-    GetActiveCallsCount() int
-    // Добавляем недостающие методы из основного интерфейса
-    GetAsteriskStatus() string
-    GetSystemMetrics() types.SystemMetrics
-}
-
 type LogsModel struct {
-	monitor     MonitorInterfaceLogs
+	monitor     MonitorInterface
 	viewport    viewport.Model
 	linesInput  textinput.Model
 	levelInput  textinput.Model
@@ -48,6 +33,9 @@ func NewLogsModel(mon MonitorInterface) LogsModel {
 	filter.Placeholder = "Filter text..."
 
 	vp := viewport.New(80, 20)
+	vp.Style = lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62"))
 
 	return LogsModel{
 		monitor:     mon,
@@ -55,11 +43,13 @@ func NewLogsModel(mon MonitorInterface) LogsModel {
 		linesInput:  lines,
 		levelInput:  level,
 		filterInput: filter,
+		ready:       true,
 	}
 }
 
 func (m LogsModel) Init() tea.Cmd {
-	return m.loadLogs
+	m.updateContent()
+	return nil
 }
 
 func (m LogsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -69,7 +59,9 @@ func (m LogsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "enter":
-			return m, m.loadLogs
+			m.loadLogs()
+			m.updateContent()
+			return m, nil
 		case "q", "Q", "ctrl+c":
 			return m, tea.Quit
 		}
@@ -80,13 +72,10 @@ func (m LogsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				BorderStyle(lipgloss.RoundedBorder()).
 				BorderForeground(lipgloss.Color("62"))
 			m.ready = true
-			m.updateContent()
 		} else {
 			m.viewport.Width = msg.Width
 			m.viewport.Height = msg.Height - 6
 		}
-	case logsLoadedMsg:
-		m.logs = string(msg)
 		m.updateContent()
 	}
 
@@ -112,19 +101,20 @@ func (m LogsModel) View() string {
 	return controls.String() + "\n" + m.viewport.View() + "\n" + m.footer()
 }
 
-type logsLoadedMsg string
-
-func (m LogsModel) loadLogs() tea.Msg {
+func (m *LogsModel) loadLogs() {
 	lines, _ := strconv.Atoi(m.linesInput.Value())
 	if lines == 0 {
 		lines = 50
 	}
 
-	logs := m.monitor.GetAsteriskLogs(lines, m.levelInput.Value(), m.filterInput.Value())
-	return logsLoadedMsg(logs)
+	m.logs = m.monitor.GetAsteriskLogs(lines, m.levelInput.Value(), m.filterInput.Value())
 }
 
 func (m *LogsModel) updateContent() {
+	if !m.ready {
+		return
+	}
+
 	var content strings.Builder
 
 	content.WriteString(TitleStyle.Render("📋 Asterisk Logs"))
