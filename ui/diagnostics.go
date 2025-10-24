@@ -19,17 +19,31 @@ type DiagnosticsModel struct {
 }
 
 func NewDiagnosticsModel(mon MonitorInterface) DiagnosticsModel {
+	// Инициализируем viewport с минимальными размерами
+	vp := viewport.New(80, 20)
+	vp.Style = lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62"))
+	
 	return DiagnosticsModel{
 		monitor:  mon,
-		viewport: viewport.New(0, 0),
+		viewport: vp,
 		results:  []types.CheckResult{},
-		ready:    false,
+		ready:    false, // все равно ждем WindowSizeMsg для точных размеров
 	}
 }
 
 func (m DiagnosticsModel) Init() tea.Cmd {
-	return nil
+	// Сразу обновляем контент при инициализации
+	return m.initializeContent
 }
+
+func (m DiagnosticsModel) initializeContent() tea.Msg {
+	// Просто сообщение для обновления контента
+	return contentInitializedMsg{}
+}
+
+type contentInitializedMsg struct{}
 
 func (m DiagnosticsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
@@ -88,19 +102,24 @@ func (m DiagnosticsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.WindowSizeMsg:
 		if !m.ready {
+			// Первая инициализация с реальными размерами окна
 			m.viewport = viewport.New(msg.Width, msg.Height-4)
 			m.viewport.Style = lipgloss.NewStyle().
 				BorderStyle(lipgloss.RoundedBorder()).
 				BorderForeground(lipgloss.Color("62"))
 			m.ready = true
-			m.updateContent()
 		} else {
+			// Обновление размеров
 			m.viewport.Width = msg.Width
 			m.viewport.Height = msg.Height - 4
 		}
+		m.updateContent()
 		return m, nil
 	case checkResultMsg:
 		m.results = append(m.results, types.CheckResult(msg))
+		m.updateContent()
+		return m, nil
+	case contentInitializedMsg:
 		m.updateContent()
 		return m, nil
 	}
@@ -126,7 +145,7 @@ type checkResultMsg types.CheckResult
 // Command functions
 func (m DiagnosticsModel) delay(ms int) tea.Cmd {
 	return tea.Tick(time.Duration(ms)*time.Millisecond, func(t time.Time) tea.Msg {
-		return nil // Просто задержка, не возвращаем сообщение
+		return nil
 	})
 }
 
