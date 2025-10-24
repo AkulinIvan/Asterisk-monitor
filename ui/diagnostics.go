@@ -19,16 +19,15 @@ type DiagnosticsModel struct {
 }
 
 func NewDiagnosticsModel(mon MonitorInterface) DiagnosticsModel {
-	vp := viewport.New(80, 20)
 	return DiagnosticsModel{
 		monitor:  mon,
-		viewport: vp,
+		viewport: viewport.New(0, 0), // временные размеры
 		results:  []types.CheckResult{},
+		ready:    false,
 	}
 }
 
 func (m DiagnosticsModel) Init() tea.Cmd {
-	// Просто инициализируем, без автоматического запуска диагностики
 	return nil
 }
 
@@ -39,48 +38,60 @@ func (m DiagnosticsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "r", "R":
+			// Быстрая диагностика
 			m.results = []types.CheckResult{}
 			m.updateContent()
-			// Запускаем быструю диагностику последовательно
-			return m, tea.Sequence(
-				m.delayCmd(100),
-				m.runCheck("Service Status", "systemctl is-active asterisk"),
-				m.delayCmd(200),
-				m.runCheck("Asterisk Process", "ps aux | grep -v grep | grep asterisk | head -1"),
-				m.delayCmd(200),
-				m.runSIPCheck,
-				m.delayCmd(200),
-				m.runChannelsCheck,
-				m.delayCmd(200),
-				m.runCheck("Version Info", "asterisk -rx 'core show version' | head -1"),
+			return m, tea.Batch(
+				m.runCheckCmd("Service Status", "systemctl is-active asterisk"),
+				tea.Tick(300*time.Millisecond, func(t time.Time) tea.Msg {
+					return m.runCheck("Asterisk Process", "ps aux | grep -v grep | grep asterisk | head -1")
+				}),
+				tea.Tick(600*time.Millisecond, func(t time.Time) tea.Msg {
+					return m.runSIPCheck()
+				}),
+				tea.Tick(900*time.Millisecond, func(t time.Time) tea.Msg {
+					return m.runChannelsCheck()
+				}),
+				tea.Tick(1200*time.Millisecond, func(t time.Time) tea.Msg {
+					return m.runCheck("Version Info", "asterisk -rx 'core show version' | head -1")
+				}),
 			)
 		case "f", "F":
+			// Полная диагностика
 			m.results = []types.CheckResult{}
 			m.updateContent()
-			// Запускаем полную диагностику
-			return m, tea.Sequence(
-				m.delayCmd(100),
-				m.runCheck("Service Status", "systemctl is-active asterisk"),
-				m.delayCmd(200),
-				m.runCheck("Asterisk Process", "ps aux | grep -v grep | grep asterisk | head -1"),
-				m.delayCmd(200),
-				m.runSIPCheck,
-				m.delayCmd(200),
-				m.runChannelsCheck,
-				m.delayCmd(200),
-				m.runCheck("Version Info", "asterisk -rx 'core show version' | head -1"),
-				m.delayCmd(200),
-				m.runCheck("Codecs", "asterisk -rx 'core show translation' | head -5"),
-				m.delayCmd(200),
-				m.runCheck("Dialplan", "asterisk -rx 'dialplan show' | grep -c 'Context'"),
-				m.delayCmd(200),
-				m.runCheck("Modules", "asterisk -rx 'module show' | grep -c 'Loaded'"),
-				m.delayCmd(200),
-				m.runCheck("Network", "ping -c 2 8.8.8.8 | grep 'packet loss' || echo 'Network test failed'"),
-				m.delayCmd(200),
-				m.runCheck("Ports", "netstat -tlnp | grep -E ':(5060|5038)' | grep LISTEN || echo 'No SIP/AMI ports found'"),
-				m.delayCmd(200),
-				m.runCheck("System Load", "uptime"),
+			return m, tea.Batch(
+				m.runCheckCmd("Service Status", "systemctl is-active asterisk"),
+				tea.Tick(200*time.Millisecond, func(t time.Time) tea.Msg {
+					return m.runCheck("Asterisk Process", "ps aux | grep -v grep | grep asterisk | head -1")
+				}),
+				tea.Tick(400*time.Millisecond, func(t time.Time) tea.Msg {
+					return m.runSIPCheck()
+				}),
+				tea.Tick(600*time.Millisecond, func(t time.Time) tea.Msg {
+					return m.runChannelsCheck()
+				}),
+				tea.Tick(800*time.Millisecond, func(t time.Time) tea.Msg {
+					return m.runCheck("Version Info", "asterisk -rx 'core show version' | head -1")
+				}),
+				tea.Tick(1000*time.Millisecond, func(t time.Time) tea.Msg {
+					return m.runCheck("Codecs", "asterisk -rx 'core show translation' | head -5")
+				}),
+				tea.Tick(1200*time.Millisecond, func(t time.Time) tea.Msg {
+					return m.runCheck("Dialplan", "asterisk -rx 'dialplan show' | grep -c 'Context'")
+				}),
+				tea.Tick(1400*time.Millisecond, func(t time.Time) tea.Msg {
+					return m.runCheck("Modules", "asterisk -rx 'module show' | grep -c 'Loaded'")
+				}),
+				tea.Tick(1600*time.Millisecond, func(t time.Time) tea.Msg {
+					return m.runCheck("Network", "ping -c 2 8.8.8.8 | grep 'packet loss' || echo 'Network test failed'")
+				}),
+				tea.Tick(1800*time.Millisecond, func(t time.Time) tea.Msg {
+					return m.runCheck("Ports", "netstat -tlnp | grep -E ':(5060|5038)' | grep LISTEN || echo 'No SIP/AMI ports found'")
+				}),
+				tea.Tick(2000*time.Millisecond, func(t time.Time) tea.Msg {
+					return m.runCheck("System Load", "uptime")
+				}),
 			)
 		case "c", "C":
 			m.results = []types.CheckResult{}
@@ -90,16 +101,16 @@ func (m DiagnosticsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.WindowSizeMsg:
 		if !m.ready {
-			m.viewport = viewport.New(msg.Width, msg.Height-2)
+			m.viewport = viewport.New(msg.Width, msg.Height-4)
 			m.viewport.Style = lipgloss.NewStyle().
 				BorderStyle(lipgloss.RoundedBorder()).
 				BorderForeground(lipgloss.Color("62"))
 			m.ready = true
-			m.updateContent()
 		} else {
 			m.viewport.Width = msg.Width
-			m.viewport.Height = msg.Height - 2
+			m.viewport.Height = msg.Height - 4
 		}
+		m.updateContent()
 	case checkResultMsg:
 		m.results = append(m.results, types.CheckResult(msg))
 		m.updateContent()
@@ -111,30 +122,32 @@ func (m DiagnosticsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m DiagnosticsModel) View() string {
 	if !m.ready {
-		return "Initializing diagnostics..."
+		return "\nInitializing diagnostics..."
 	}
 
-	return m.viewport.View() + "\n" + m.footer()
+	header := TitleStyle.Render("🔍 Asterisk Diagnostics") + "\n\n"
+	footer := "\n" + m.footer()
+	
+	return header + m.viewport.View() + footer
 }
 
 // Messages
 type checkResultMsg types.CheckResult
 
 // Command functions
-func (m DiagnosticsModel) delayCmd(ms time.Duration) tea.Cmd {
-	return tea.Tick(ms*time.Millisecond, func(t time.Time) tea.Msg {
-		return nil
-	})
-}
-
-func (m DiagnosticsModel) runCheck(name, command string) tea.Cmd {
+func (m DiagnosticsModel) runCheckCmd(name, command string) tea.Cmd {
 	return func() tea.Msg {
 		result := m.monitor.ExecuteCommand(name, command)
 		return checkResultMsg(result)
 	}
 }
 
-func (m DiagnosticsModel) runSIPCheck() tea.Msg {
+func (m DiagnosticsModel) runCheck(name, command string) checkResultMsg {
+	result := m.monitor.ExecuteCommand(name, command)
+	return checkResultMsg(result)
+}
+
+func (m DiagnosticsModel) runSIPCheck() checkResultMsg {
 	online, total := m.monitor.GetSIPPeersCount()
 	result := types.CheckResult{
 		Name:      "SIP Peers",
@@ -149,7 +162,7 @@ func (m DiagnosticsModel) runSIPCheck() tea.Msg {
 	return checkResultMsg(result)
 }
 
-func (m DiagnosticsModel) runChannelsCheck() tea.Msg {
+func (m DiagnosticsModel) runChannelsCheck() checkResultMsg {
 	count := m.monitor.GetActiveCallsCount()
 	result := types.CheckResult{
 		Name:      "Active Channels",
@@ -165,16 +178,19 @@ func (m DiagnosticsModel) runChannelsCheck() tea.Msg {
 }
 
 func (m *DiagnosticsModel) updateContent() {
-	var content strings.Builder
+	if !m.ready {
+		return
+	}
 
-	content.WriteString(TitleStyle.Render("🔍 Asterisk Diagnostics"))
-	content.WriteString("\n\n")
+	var content strings.Builder
 
 	if len(m.results) == 0 {
 		content.WriteString("No diagnostics run yet.\n\n")
-		content.WriteString("Press 'r' for quick check\n")
-		content.WriteString("Press 'f' for full diagnostics\n")
-		content.WriteString("Press 'c' to clear results\n")
+		content.WriteString("Available commands:\n")
+		content.WriteString("• Press 'r' for quick check\n")
+		content.WriteString("• Press 'f' for full diagnostics\n") 
+		content.WriteString("• Press 'c' to clear results\n")
+		content.WriteString("• Press 'q' to quit\n")
 	} else {
 		content.WriteString(m.renderResults())
 	}
@@ -213,12 +229,12 @@ func (m *DiagnosticsModel) renderResults() string {
 
 	// Summary
 	if len(m.results) > 0 {
-		builder.WriteString("\n--- Summary ---\n")
-		builder.WriteString(fmt.Sprintf("✅ Success: %d | ⚠️ Warning: %d | ❌ Errors: %d\n",
+		builder.WriteString("\n" + strings.Repeat("─", 40) + "\n")
+		builder.WriteString(fmt.Sprintf("📊 Summary: ✅ %d | ⚠️ %d | ❌ %d\n",
 			successCount, warningCount, errorCount))
 	}
 
-	return borderStyle.Render(builder.String())
+	return builder.String()
 }
 
 func (m *DiagnosticsModel) footer() string {
