@@ -19,7 +19,6 @@ type DiagnosticsModel struct {
 }
 
 func NewDiagnosticsModel(mon MonitorInterface) DiagnosticsModel {
-	// Инициализируем viewport с минимальными размерами
 	vp := viewport.New(80, 20)
 	vp.Style = lipgloss.NewStyle().
 		BorderStyle(lipgloss.RoundedBorder()).
@@ -29,21 +28,14 @@ func NewDiagnosticsModel(mon MonitorInterface) DiagnosticsModel {
 		monitor:  mon,
 		viewport: vp,
 		results:  []types.CheckResult{},
-		ready:    false, // все равно ждем WindowSizeMsg для точных размеров
+		ready:    true, // Сразу готов к работе
 	}
 }
 
 func (m DiagnosticsModel) Init() tea.Cmd {
-	// Сразу обновляем контент при инициализации
-	return m.initializeContent
+	m.updateContent()
+	return nil
 }
-
-func (m DiagnosticsModel) initializeContent() tea.Msg {
-	// Просто сообщение для обновления контента
-	return contentInitializedMsg{}
-}
-
-type contentInitializedMsg struct{}
 
 func (m DiagnosticsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
@@ -52,47 +44,11 @@ func (m DiagnosticsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "r", "R":
-			// Быстрая диагностика
-			m.results = []types.CheckResult{}
-			m.updateContent()
-			return m, tea.Sequence(
-				m.runCheck("Service Status", "systemctl is-active asterisk"),
-				m.delay(300),
-				m.runCheck("Asterisk Process", "ps aux | grep -v grep | grep asterisk | head -1"),
-				m.delay(300),
-				m.runSIPCheckCmd(),
-				m.delay(300),
-				m.runChannelsCheckCmd(),
-				m.delay(300),
-				m.runCheck("Version Info", "asterisk -rx 'core show version' | head -1"),
-			)
+			m.runQuickDiagnostics()
+			return m, nil
 		case "f", "F":
-			// Полная диагностика
-			m.results = []types.CheckResult{}
-			m.updateContent()
-			return m, tea.Sequence(
-				m.runCheck("Service Status", "systemctl is-active asterisk"),
-				m.delay(200),
-				m.runCheck("Asterisk Process", "ps aux | grep -v grep | grep asterisk | head -1"),
-				m.delay(200),
-				m.runSIPCheckCmd(),
-				m.delay(200),
-				m.runChannelsCheckCmd(),
-				m.delay(200),
-				m.runCheck("Version Info", "asterisk -rx 'core show version' | head -1"),
-				m.delay(200),
-				m.runCheck("Codecs", "asterisk -rx 'core show translation' | head -5"),
-				m.delay(200),
-				m.runCheck("Dialplan", "asterisk -rx 'dialplan show' | grep -c 'Context'"),
-				m.delay(200),
-				m.runCheck("Modules", "asterisk -rx 'module show' | grep -c 'Loaded'"),
-				m.delay(200),
-				m.runCheck("Network", "ping -c 2 8.8.8.8 | grep 'packet loss' || echo 'Network test failed'"),
-				m.delay(200),
-				m.runCheck("Ports", "netstat -tlnp | grep -E ':(5060|5038)' | grep LISTEN || echo 'No SIP/AMI ports found'"),
-				m.delay(200),
-				m.runCheck("System Load", "uptime"),
-			)
+			m.runFullDiagnostics()
+			return m, nil
 		case "c", "C":
 			m.results = []types.CheckResult{}
 			m.updateContent()
@@ -102,26 +58,16 @@ func (m DiagnosticsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.WindowSizeMsg:
 		if !m.ready {
-			// Первая инициализация с реальными размерами окна
 			m.viewport = viewport.New(msg.Width, msg.Height-4)
 			m.viewport.Style = lipgloss.NewStyle().
 				BorderStyle(lipgloss.RoundedBorder()).
 				BorderForeground(lipgloss.Color("62"))
 			m.ready = true
 		} else {
-			// Обновление размеров
 			m.viewport.Width = msg.Width
 			m.viewport.Height = msg.Height - 4
 		}
 		m.updateContent()
-		return m, nil
-	case checkResultMsg:
-		m.results = append(m.results, types.CheckResult(msg))
-		m.updateContent()
-		return m, nil
-	case contentInitializedMsg:
-		m.updateContent()
-		return m, nil
 	}
 
 	m.viewport, cmd = m.viewport.Update(msg)
@@ -139,55 +85,111 @@ func (m DiagnosticsModel) View() string {
 	return header + m.viewport.View() + footer
 }
 
-// Messages
-type checkResultMsg types.CheckResult
+func (m *DiagnosticsModel) runQuickDiagnostics() {
+	m.results = []types.CheckResult{}
+	m.updateContent()
 
-// Command functions
-func (m DiagnosticsModel) delay(ms int) tea.Cmd {
-	return tea.Tick(time.Duration(ms)*time.Millisecond, func(t time.Time) tea.Msg {
-		return nil
-	})
+	// Просто выполняем проверки синхронно
+	checks := []struct {
+		name string
+		cmd  string
+	}{
+		{"Service Status", "systemctl is-active asterisk"},
+		{"Asterisk Process", "ps aux | grep -v grep | grep asterisk | head -1"},
+		{"Version Info", "asterisk -rx 'core show version' | head -1"},
+	}
+
+	for _, check := range checks {
+		result := m.monitor.ExecuteCommand(check.name, check.cmd)
+		m.results = append(m.results, result)
+		m.updateContent()
+		time.Sleep(300 * time.Millisecond)
+	}
+
+	// Добавляем SIP и каналы
+	online, total := m.monitor.GetSIPPeersCount()
+	sipResult := types.CheckResult{
+		Name:      "SIP Peers",
+		Status:    "success",
+		Message:   fmt.Sprintf("%d online out of %d total", online, total),
+		Timestamp: time.Now(),
+	}
+	if online == 0 && total > 0 {
+		sipResult.Status = "warning"
+		sipResult.Message = fmt.Sprintf("No peers online (total: %d)", total)
+	}
+	m.results = append(m.results, sipResult)
+	m.updateContent()
+
+	count := m.monitor.GetActiveCallsCount()
+	channelsResult := types.CheckResult{
+		Name:      "Active Channels",
+		Status:    "success",
+		Message:   fmt.Sprintf("%d active channels", count),
+		Timestamp: time.Now(),
+	}
+	if count > 10 {
+		channelsResult.Status = "warning"
+		channelsResult.Message = fmt.Sprintf("High channel count: %d", count)
+	}
+	m.results = append(m.results, channelsResult)
+	m.updateContent()
 }
 
-func (m DiagnosticsModel) runCheck(name, command string) tea.Cmd {
-	return func() tea.Msg {
-		result := m.monitor.ExecuteCommand(name, command)
-		return checkResultMsg(result)
-	}
-}
+func (m *DiagnosticsModel) runFullDiagnostics() {
+	m.results = []types.CheckResult{}
+	m.updateContent()
 
-func (m DiagnosticsModel) runSIPCheckCmd() tea.Cmd {
-	return func() tea.Msg {
-		online, total := m.monitor.GetSIPPeersCount()
-		result := types.CheckResult{
-			Name:      "SIP Peers",
-			Status:    "success",
-			Message:   fmt.Sprintf("%d online out of %d total", online, total),
-			Timestamp: time.Now(),
-		}
-		if online == 0 && total > 0 {
-			result.Status = "warning"
-			result.Message = fmt.Sprintf("No peers online (total: %d)", total)
-		}
-		return checkResultMsg(result)
+	checks := []struct {
+		name string
+		cmd  string
+	}{
+		{"Service Status", "systemctl is-active asterisk"},
+		{"Asterisk Process", "ps aux | grep -v grep | grep asterisk | head -1"},
+		{"Version Info", "asterisk -rx 'core show version' | head -1"},
+		{"Codecs", "asterisk -rx 'core show translation' | head -5"},
+		{"Dialplan", "asterisk -rx 'dialplan show' | grep -c 'Context'"},
+		{"Modules", "asterisk -rx 'module show' | grep -c 'Loaded'"},
+		{"Network", "ping -c 2 8.8.8.8 | grep 'packet loss' || echo 'Network test failed'"},
+		{"Ports", "netstat -tlnp | grep -E ':(5060|5038)' | grep LISTEN || echo 'No SIP/AMI ports found'"},
+		{"System Load", "uptime"},
 	}
-}
 
-func (m DiagnosticsModel) runChannelsCheckCmd() tea.Cmd {
-	return func() tea.Msg {
-		count := m.monitor.GetActiveCallsCount()
-		result := types.CheckResult{
-			Name:      "Active Channels",
-			Status:    "success",
-			Message:   fmt.Sprintf("%d active channels", count),
-			Timestamp: time.Now(),
-		}
-		if count > 10 {
-			result.Status = "warning"
-			result.Message = fmt.Sprintf("High channel count: %d", count)
-		}
-		return checkResultMsg(result)
+	for _, check := range checks {
+		result := m.monitor.ExecuteCommand(check.name, check.cmd)
+		m.results = append(m.results, result)
+		m.updateContent()
+		time.Sleep(200 * time.Millisecond)
 	}
+
+	// Добавляем SIP и каналы
+	online, total := m.monitor.GetSIPPeersCount()
+	sipResult := types.CheckResult{
+		Name:      "SIP Peers",
+		Status:    "success",
+		Message:   fmt.Sprintf("%d online out of %d total", online, total),
+		Timestamp: time.Now(),
+	}
+	if online == 0 && total > 0 {
+		sipResult.Status = "warning"
+		sipResult.Message = fmt.Sprintf("No peers online (total: %d)", total)
+	}
+	m.results = append(m.results, sipResult)
+	m.updateContent()
+
+	count := m.monitor.GetActiveCallsCount()
+	channelsResult := types.CheckResult{
+		Name:      "Active Channels",
+		Status:    "success",
+		Message:   fmt.Sprintf("%d active channels", count),
+		Timestamp: time.Now(),
+	}
+	if count > 10 {
+		channelsResult.Status = "warning"
+		channelsResult.Message = fmt.Sprintf("High channel count: %d", count)
+	}
+	m.results = append(m.results, channelsResult)
+	m.updateContent()
 }
 
 func (m *DiagnosticsModel) updateContent() {
