@@ -20,14 +20,20 @@ type SecurityModel struct {
 
 func NewSecurityModel(mon MonitorInterface) SecurityModel {
 	vp := viewport.New(80, 20)
+	vp.Style = lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62"))
+	
 	return SecurityModel{
 		monitor:  mon,
 		viewport: vp,
 		results:  []types.CheckResult{},
+		ready:    true, // Сразу готов
 	}
 }
 
 func (m SecurityModel) Init() tea.Cmd {
+	m.updateContent()
 	return nil
 }
 
@@ -39,11 +45,14 @@ func (m SecurityModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "r", "R":
 			m.runQuickSecurityScan()
+			return m, nil
 		case "f", "F":
 			m.runFullSecurityScan()
+			return m, nil
 		case "c", "C":
 			m.results = []types.CheckResult{}
 			m.updateContent()
+			return m, nil
 		case "q", "Q", "ctrl+c":
 			return m, tea.Quit
 		}
@@ -153,7 +162,7 @@ func (m *SecurityModel) analyzeSecurityResult(result *types.CheckResult) {
 		if strings.Contains(result.Message, "0.0.0.0") || strings.Contains(result.Message, ":::") {
 			result.Status = "warning"
 			result.Message += " ⚠️  SIP ports exposed to all interfaces"
-		} else if result.Message == "" {
+		} else if strings.TrimSpace(result.Message) == "" {
 			result.Status = "success"
 			result.Message = "No SIP ports open to public"
 		}
@@ -162,7 +171,7 @@ func (m *SecurityModel) analyzeSecurityResult(result *types.CheckResult) {
 		if strings.Contains(result.Message, "0.0.0.0") || strings.Contains(result.Message, ":::") {
 			result.Status = "error"
 			result.Message += " ❌ AMI port exposed to all interfaces - SECURITY RISK!"
-		} else if result.Message == "" {
+		} else if strings.TrimSpace(result.Message) == "" {
 			result.Status = "success"
 			result.Message = "AMI port not exposed to public"
 		}
@@ -171,54 +180,83 @@ func (m *SecurityModel) analyzeSecurityResult(result *types.CheckResult) {
 		if result.Message != "active" {
 			result.Status = "warning"
 			result.Message += " ⚠️  Fail2Ban not active"
+		} else {
+			result.Status = "success"
 		}
 
 	case "Firewall Status":
 		if strings.Contains(result.Message, "inactive") || strings.Contains(result.Message, "No firewall") {
 			result.Status = "warning"
 			result.Message += " ⚠️  Firewall not active"
+		} else if strings.Contains(result.Message, "active") {
+			result.Status = "success"
 		}
 
 	case "Asterisk Config Permissions":
-		if result.Message != "0" {
+		if result.Message != "0" && strings.TrimSpace(result.Message) != "" {
 			result.Status = "error"
 			result.Message += " ❌ World-writable config files found"
+		} else {
+			result.Status = "success"
+			result.Message = "Config permissions are secure"
 		}
 
 	case "Asterisk Process User":
 		if result.Message == "root" {
 			result.Status = "warning"
 			result.Message += " ⚠️  Running as root - not recommended"
+		} else if strings.TrimSpace(result.Message) != "" {
+			result.Status = "success"
+			result.Message += " ✓ Running as non-root user"
 		}
 
 	case "Asterisk Running as Root":
-		if result.Message != "0" {
+		if result.Message != "0" && strings.TrimSpace(result.Message) != "" {
 			result.Status = "error"
 			result.Message += " ❌ Asterisk should not run as root"
+		} else {
+			result.Status = "success"
+			result.Message = "Asterisk not running as root"
 		}
 
 	case "SSL Certificate Check":
-		if result.Message != "No SSL certificates found" && result.Message != "0" {
+		if result.Message != "No SSL certificates found" && result.Message != "0" && strings.TrimSpace(result.Message) != "" {
 			result.Status = "warning"
 			result.Message += " ⚠️  SSL certificates expiring soon"
+		} else {
+			result.Status = "success"
+			if result.Message == "No SSL certificates found" {
+				result.Message = "No SSL certificates configured"
+			} else {
+				result.Message = "SSL certificates are valid"
+			}
 		}
 
 	case "Default Passwords Check":
-		if result.Message != "" {
+		if strings.TrimSpace(result.Message) != "" {
 			result.Status = "warning"
 			result.Message += " ⚠️  Check for default passwords"
+		} else {
+			result.Status = "success"
+			result.Message = "No obvious default passwords found"
 		}
 	}
 
 	// Если статус еще не установлен, устанавливаем по умолчанию
-	if result.Status == "success" && result.Error == "" {
-		result.Status = "success"
-	} else if result.Error != "" {
-		result.Status = "error"
+	if result.Status == "" {
+		if result.Error != "" {
+			result.Status = "error"
+		} else {
+			result.Status = "success"
+		}
 	}
 }
 
 func (m *SecurityModel) updateContent() {
+	if !m.ready {
+		return
+	}
+
 	var content strings.Builder
 
 	content.WriteString(TitleStyle.Render("🛡️ Asterisk Security Scan"))

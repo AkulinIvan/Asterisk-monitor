@@ -32,7 +32,7 @@ func NewLogsModel(mon MonitorInterface) LogsModel {
 	filter := textinput.New()
 	filter.Placeholder = "Filter text..."
 
-	vp := viewport.New(100, 200)
+	vp := viewport.New(100, 100)
 	vp.Style = lipgloss.NewStyle().
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("62"))
