@@ -77,36 +77,79 @@ func (m *LinuxMonitor) GetSIPPeersCount() (int, int) {
         return 0, 0
     }
     
+    outputStr := string(output)
     online := 0
     total := 0
-    lines := strings.Split(string(output), "\n")
+    
+    // Разбиваем вывод на строки
+    lines := strings.Split(outputStr, "\n")
     
     for _, line := range lines {
         trimmed := strings.TrimSpace(line)
         
-        // Пропускаем заголовки, пустые строки и итоговую строку
-        if strings.Contains(trimmed, "Name/username") || 
-           trimmed == "" || 
-           strings.Contains(trimmed, "sip peers") {
+        // Пропускаем заголовки и пустые строки
+        if strings.Contains(trimmed, "Name/username") || trimmed == "" {
             continue
         }
         
-        // Разбиваем строку на поля
-        fields := strings.Fields(trimmed)
-        if len(fields) < 6 {
-            continue
+        // Ищем строку с итоговой статистикой
+        if strings.Contains(trimmed, "sip peers") {
+            // Парсим итоговую строку: "25 sip peers [Monitored: 7 online, 13 offline Unmonitored: 5 online, 0 offline]"
+            if strings.Contains(trimmed, "Monitored:") && strings.Contains(trimmed, "Unmonitored:") {
+                // Извлекаем числа из строки
+                monitoredOnline := extractNumberAfter(trimmed, "Monitored:", "online")
+                unmonitoredOnline := extractNumberAfter(trimmed, "Unmonitored:", "online")
+                online = monitoredOnline + unmonitoredOnline
+                
+                // Общее количество - первое число в строке
+                total = extractFirstNumber(trimmed)
+            }
+            break
         }
         
-        total++
-        
-        // Проверяем статус (обычно предпоследнее поле)
-        statusField := fields[len(fields)-2]
-        if statusField == "OK" || statusField == "Unmonitored" {
-            online++
+        // Если не нашли итоговую строку, считаем вручную
+        if strings.Contains(trimmed, "/") && len(strings.Fields(trimmed)) >= 6 {
+            total++
+            fields := strings.Fields(trimmed)
+            statusField := fields[len(fields)-2] // Предпоследнее поле - статус
+            if statusField == "OK" || statusField == "Unmonitored" {
+                online++
+            }
         }
     }
     
     return online, total
+}
+
+func extractNumberAfter(text, after, before string) int {
+    startIdx := strings.Index(text, after)
+    if startIdx == -1 {
+        return 0
+    }
+    
+    endIdx := strings.Index(text[startIdx:], before)
+    if endIdx == -1 {
+        return 0
+    }
+    
+    numberStr := strings.TrimSpace(text[startIdx+len(after) : startIdx+endIdx])
+    number, err := strconv.Atoi(numberStr)
+    if err != nil {
+        return 0
+    }
+    
+    return number
+}
+
+func extractFirstNumber(text string) int {
+    fields := strings.Fields(text)
+    if len(fields) > 0 {
+        number, err := strconv.Atoi(fields[0])
+        if err == nil {
+            return number
+        }
+    }
+    return 0
 }
 
 // GetActiveCallsCount возвращает количество активных вызовов
