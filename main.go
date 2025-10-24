@@ -20,6 +20,7 @@ type appModel struct {
 	logs        ui.LogsModel
 	security    ui.SecurityModel
 	backup      ui.BackupModel
+	debug       ui.DebugModel
 	settings    ui.SettingsModel
 	monitor     *monitor.LinuxMonitor
 }
@@ -35,6 +36,7 @@ func initialAppModel(configManager *config.ConfigManager) appModel {
 		logs:        ui.NewLogsModel(mon),
 		security:    ui.NewSecurityModel(mon),
 		backup:      ui.NewBackupModel(mon),
+		debug:       ui.NewDebugModel(mon),
 		settings:    ui.NewSettingsModel(configManager),
 		monitor:     mon,
 	}
@@ -71,6 +73,9 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "7":
 			m.currentView = "settings"
 			cmd = m.settings.Init()
+		case "8":
+			m.currentView = "debug"
+			cmd = m.debug.Init()
 		case "q", "Q", "ctrl+c":
 			return m, tea.Quit
 		}
@@ -113,6 +118,12 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if newCmd != nil {
 			cmd = newCmd
 		}
+	case "debug":
+		newModel, newCmd := m.debug.Update(msg)
+		m.debug = newModel.(ui.DebugModel)
+		if newCmd != nil {
+			cmd = newCmd
+		}
 	case "settings":
 		newModel, newCmd := m.settings.Update(msg)
 		m.settings = newModel.(ui.SettingsModel)
@@ -140,6 +151,8 @@ func (m appModel) View() string {
 		view = m.security.View()
 	case "backup":
 		view = m.backup.View()
+	case "debug":
+		view = m.debug.View()
 	case "settings":
 		view = m.settings.View()
 	default:
@@ -158,6 +171,7 @@ func (m appModel) renderHeader() string {
 		"5: Security",
 		"6: Backup",
 		"7: Settings",
+		"8: Debug",
 	}
 
 	var currentViewName string
@@ -176,6 +190,8 @@ func (m appModel) renderHeader() string {
 		currentViewName = "💾 Backup"
 	case "settings":
 		currentViewName = "⚙️ Settings"
+	case "debug":
+		currentViewName = "🐛 Debug"
 	}
 
 	header := fmt.Sprintf("Asterisk Monitor - %s", currentViewName)

@@ -54,7 +54,7 @@ var (
     warningStyle = statusStyle.Copy().Foreground(colorYellow)
     errorStyle   = statusStyle.Copy().Foreground(colorRed)
     infoStyle    = statusStyle.Copy().Foreground(colorBlue)
-
+    infStyle = statusStyle.Copy().Foreground(lipgloss.Color("14"))
     borderStyle = lipgloss.NewStyle().
             BorderStyle(lipgloss.RoundedBorder()).
             BorderForeground(colorGray).
